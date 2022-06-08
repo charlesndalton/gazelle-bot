@@ -8,10 +8,10 @@ FROM docker.io/alpine:latest
 
 RUN apk add --no-cache tini
 
-COPY --from=cargo-build /app/target/x86_64-unknown-linux-musl/release/dik-dik /
+COPY --from=cargo-build /app/target/x86_64-unknown-linux-musl/release/antelope /
 WORKDIR /src/contract-address-registry/
 COPY --from=cargo-build /app/src/contract-address-registry/ /src/contract-address-registry/
 WORKDIR /
 
 ENV RUST_LOG=INFO
-CMD ["./dik-dik"]
+CMD ["./gazelle"]
