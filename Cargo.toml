@@ -21,3 +21,6 @@ eyre = "0.6.8"
 urlencoding = "2.1.0"
 derive-new = "0.5"
 derive-getters = "0.2.0"
+bigdecimal = "0.3.0"
+num-bigint = "0.4"
+

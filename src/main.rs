@@ -20,7 +20,7 @@ async fn main() -> Result<()> {
 mod report_creator {
     use crate::{
         graph_client,
-        types::{Result, Error, BasicAngleReport, CollateralReport}
+        types::{Result, Error, AngleReport, IndividualAssetAngleReport}
     };
     use std::fs::File;
     use std::io::prelude::*;
@@ -28,9 +28,12 @@ mod report_creator {
     use ethers::abi::Address;
     use rust_decimal_macros::dec;
     use rust_decimal::Decimal;
+    use num_bigint::BigInt;
+    use bigdecimal::{BigDecimal, One};
+    use std::str::FromStr;
 
-    pub async fn create_report(infura_api_key: &str) -> Result<Vec<BasicAngleReport>> {
-        let mut report = Vec::new();
+    pub async fn create_report(infura_api_key: &str) -> Result<AngleReport> {
+        let mut collateral_reports = Vec::new();
 
         let collateral_data = graph_client::get_collateral_data().await?;
         // hack: unwraps galore
@@ -45,14 +48,18 @@ mod report_creator {
 
             println!("{:?}", pool_data);
 
-            let stock_user: Decimal = pool_data["stockUser"].as_str().unwrap().parse().unwrap();
-            let total_hedge_amount: Decimal = pool_data["totalHedgeAmount"].as_str().unwrap().parse().unwrap();
-            let hedge_ratio = ((total_hedge_amount / stock_user) * dec!(100)).round();
+            let decimals: u32 = pool_data["decimals"].as_str().unwrap().parse().unwrap();
+            let slp_divide_by: BigDecimal = (BigInt::one() * 10_u32).pow(18 + decimals).into(); // they format the stockSLP in 18 + decimals
+            let stock_slp = BigDecimal::from_str(pool_data["stockSLP"].as_str().unwrap())? / slp_divide_by;
 
-            report.push(BasicAngleReport::new(pool_data["collatName"].as_str().unwrap().to_string(), hedge_ratio));
+            let stock_user = BigDecimal::from_str(pool_data["stockUser"].as_str().unwrap())? / 10_i64.pow(18); 
+            let total_hedge_amount = BigDecimal::from_str(pool_data["totalHedgeAmount"].as_str().unwrap())? / 10_i64.pow(18);
+            let hedge_ratio = ((total_hedge_amount / &stock_user) * BigDecimal::from(100));
+        
+            collateral_reports.push(IndividualAssetAngleReport::new(pool_data["collatName"].as_str().unwrap().to_string(), hedge_ratio.with_scale(0), stock_user.with_scale(0), stock_slp.with_scale(0)));
         }
 
-        Ok(report) 
+        Ok(AngleReport::new(BigDecimal::from(1), BigDecimal::from(1), collateral_reports)) 
     }
 }
 
@@ -63,7 +70,7 @@ mod graph_client {
     // deserializing) but I will hopefully be the only one to ever interact with this bot
 
     const collateral_data_url: &str = "https://api.thegraph.com/subgraphs/name/picodes/transaction";
-    const collateral_data_post_body: &str = "{ \"query\": \"{ poolDatas { stableName, collatName, decimals, stockUser, totalHedgeAmount } }\" }";
+    const collateral_data_post_body: &str = "{ \"query\": \"{ poolDatas { stableName, collatName, decimals, stockUser, totalHedgeAmount, stockSLP } }\" }";
 
     pub async fn get_collateral_data() -> Result<Value> {
         let client = reqwest::Client::new();
@@ -82,12 +89,22 @@ mod graph_client {
 mod report_publisher {
     use crate::{
         telegram_client,
-        types::{Result, BasicAngleReport}
+        types::{Result, AngleReport}
     };
 
-    pub async fn publish_report(report: Vec<BasicAngleReport>, telegram_token: &str) -> Result<()> {
-        for individual_report in report {
-            telegram_client::send_message_to_committee(format!("{}'s price risk relative to the euro is hedged away {}%", individual_report.collateral_asset(), individual_report.collateralization_ratio()).as_str(), telegram_token).await?;
+    pub async fn publish_report(report: AngleReport, telegram_token: &str) -> Result<()> {
+        println!("Daily Angle");
+        println!("-----------");
+        println!("Total collateralization ratio: {}", report.total_collateralization_ratio());
+        println!("Organic collateralization ratio: {}", report.organic_collateralization_ratio());
+        for individual_asset_report in report.collateral_reports() {
+            println!("-----------");
+            println!("Asset – {}", individual_asset_report.collateral_asset());
+            println!("Percentage of total TVL: x");
+            println!("User TVL: {}", individual_asset_report.user_tvl());
+            println!("SLP TVL: {}", individual_asset_report.slp_tvl());
+            //telegram_client::send_message_to_committee(format!("{}'s price risk relative to the euro is hedged away {}%", individual_report.collateral_asset(), individual_report.collateralization_ratio()).as_str(), telegram_token).await?;
+            //
         }
 
         Ok(())
@@ -114,7 +131,7 @@ mod telegram_client {
 mod types {
     use derive_getters::{Getters};
     use derive_new::new;
-    use rust_decimal::Decimal;
+    use bigdecimal::BigDecimal;
 
     #[derive(Debug, thiserror::Error)]
     pub enum Error {
@@ -139,6 +156,12 @@ mod types {
         #[error(transparent)]
         ReqwestError(#[from] reqwest::Error),
 
+        #[error(transparent)]
+        ParseBigIntError(#[from] num_bigint::ParseBigIntError),
+
+        #[error(transparent)]
+        ParseBigDecimalError(#[from] bigdecimal::ParseBigDecimalError),
+
         #[error("We expected to find the following field {expected_field:?} in ethereum.json, but it wasn't there.")]
         EthAddressesError {
             expected_field: String,
@@ -148,28 +171,18 @@ mod types {
     pub type Result<T> = std::result::Result<T, Error>;
 
     #[derive(Getters, new, Debug)]
-    pub struct BasicAngleReport {
+    pub struct IndividualAssetAngleReport {
         collateral_asset: String,
-        collateralization_ratio: Decimal,
+        hedge_ratio: BigDecimal,
+        user_tvl: BigDecimal,
+        slp_tvl: BigDecimal,
     }
 
     #[derive(Getters, new, Debug)]
     pub struct AngleReport {
-        organic_collateralization_ratio: Decimal,
-        total_collateralization_ratio: Decimal,
-        collateral_reports: Vec<CollateralReport>
-    }
-
-    #[derive(Getters, new, Debug)]
-    pub struct CollateralReport {
-        percentage_hedged: Decimal,
-        total_tvl: Decimal
-    }
-
-    pub struct TvlSplit {
-        tvl_from_users: Decimal,
-        tvl_from_hedging_agents: Decimal,
-        tvl_from_slps: Decimal
+        organic_collateralization_ratio: BigDecimal,
+        total_collateralization_ratio: BigDecimal,
+        collateral_reports: Vec<IndividualAssetAngleReport>
     }
 
 }
