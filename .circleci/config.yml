@@ -18,10 +18,10 @@ jobs:
       - run: "docker login -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PASSWORD"
       - run:
           name: "Build image"
-          command: "docker build . -t charlesdalton/dik-dik:latest"
+          command: "docker build . -t charlesdalton/gazelle:latest"
       - run:
           name: "Push image to DockerHub"
-          command: "docker push charlesdalton/dik-dik:latest"
+          command: "docker push charlesdalton/gazelle:latest"
 
 # Invoke jobs via workflows
 # See: https://circleci.com/docs/2.0/configuration-reference/#workflows
