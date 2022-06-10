@@ -58,13 +58,25 @@ mod report_creator {
 
             let collateral_symbol = collateral_data["collatName"].as_str().unwrap();
             let price = cryptocurrency_prices_api_client::get_usd_price(collateral_symbol).await?;
-            let stock_user_value = &stock_user * &price;
+            let total_assets = BigDecimal::from_str(collateral_data["totalAsset"].as_str().unwrap())? / 10_i64.pow(decimals);
+            let total_assets_value = &total_assets * &price;
             let stock_slp_value = &stock_slp * &price;
 
-            organic_collateral_value += &stock_user_value;
-            total_collateral_value += (&stock_user_value + &stock_slp_value);
+            let organic_assets = if &total_assets > &stock_slp { &total_assets - &stock_slp } else { BigDecimal::from(0) };
+            let organic_assets_value = &organic_assets * &price;
+
+            organic_collateral_value += &organic_assets_value;
+            total_collateral_value += &total_assets_value; 
         
-            collateral_reports.push(CollateralReport::new(collateral_symbol.to_string(), hedge_ratio.with_scale(0), stock_user.with_scale(0), stock_user_value.with_scale(0), stock_slp.with_scale(0), stock_slp_value.with_scale(0)));
+            collateral_reports.push(CollateralReport::new(
+                    collateral_symbol.to_string(), 
+                    hedge_ratio.with_scale(0), 
+                    organic_assets.with_scale(0),
+                    organic_assets_value.with_scale(0),
+                    stock_slp.with_scale(0),
+                    stock_slp_value.with_scale(0),
+                    total_assets.with_scale(0),
+                    total_assets_value.with_scale(0)));
         }
 
         let organic_collateralization_ratio = &organic_collateral_value / &total_minted_value; 
@@ -83,7 +95,7 @@ mod graph_client {
 
     const URL: &str = "https://api.thegraph.com/subgraphs/name/picodes/transaction";
     const COLLATERAL_DATA_POST_BODY: &str = "{ \"query\": \"{ poolDatas { stableName, collatName, decimals, stockUser, totalHedgeAmount, stockSLP } }\" }";
-    const STABLECOIN_DATA_POST_BODY: &str = "{ \"query\": \"{ stableDatas { name, totalMinted, collatRatio, collaterals { collatName, decimals, stockSLP, stockUser, totalHedgeAmount } } }\" }";
+    const STABLECOIN_DATA_POST_BODY: &str = "{ \"query\": \"{ stableDatas { name, totalMinted, collatRatio, collaterals { collatName, decimals, stockSLP, stockUser, totalAsset, totalHedgeAmount } } }\" }";
 
     //pub async fn get_collateral_data() -> Result<Value> {
     //    let client = reqwest::Client::new();
@@ -121,6 +133,7 @@ mod report_publisher {
     use bigdecimal::BigDecimal;
 
     pub async fn publish_report(report: AngleStablecoinReport, telegram_token: &str) -> Result<()> {
+        println!("RPORT : {:?}", report);
         println!("Daily Angle");
         println!("-----------");
         println!("Total agEUR minted: {} (${})", report.total_minted(), report.total_minted_value());
@@ -130,9 +143,9 @@ mod report_publisher {
             println!("-----------");
             println!("Asset – {}", collateral_report.asset_name());
             println!("Percentage of volatility hedged: {}%", collateral_report.hedge_ratio());
-            println!("Percentage of organic TVL: {}%", ((collateral_report.user_tvl_value() / report.organic_tvl()) * BigDecimal::from(100)).with_scale(0));
-            println!("User TVL: {}, (${})", collateral_report.user_tvl(), collateral_report.user_tvl_value());
-            println!("SLP TVL: {}, (${})", collateral_report.slp_tvl(), collateral_report.slp_tvl_value());
+            println!("Percentage of organic TVL: {}%", ((collateral_report.organic_tvl_value() / report.organic_tvl()) * BigDecimal::from(100)).with_scale(0));
+            //println!("User TVL: {}, (${})", collateral_report.organic_tvl_value(), collateral_report.user_tvl_value());
+            //println!("SLP TVL: {}, (${})", collateral_report.slp_tvl(), collateral_report.slp_tvl_value());
             //telegram_client::send_message_to_committee(format!("{}'s price risk relative to the euro is hedged away {}%", individual_report.collateral_asset(), individual_report.collateralization_ratio()).as_str(), telegram_token).await?;
             //
         }
@@ -177,7 +190,7 @@ mod cryptocurrency_prices_api_client {
                 .send()
                 .await?;
             let response: Value = response.json().await?;
-            println!("{:?}", response);
+            //println!("{:?}", response);
 
             let usd_price_raw = response["data"][symbol].as_array().unwrap()[0]["quote"]["USD"]["price"].as_f64().unwrap();
             let usd_price = BigDecimal::from((usd_price_raw * 1_000.0).round() as i64) / 1_000;
@@ -260,10 +273,12 @@ mod types {
     pub struct CollateralReport { 
         asset_name: String,
         hedge_ratio: BigDecimal,
-        user_tvl: BigDecimal,
-        user_tvl_value: BigDecimal,
+        organic_tvl: BigDecimal,
+        organic_tvl_value: BigDecimal,
         slp_tvl: BigDecimal,
         slp_tvl_value: BigDecimal,
+        total_tvl: BigDecimal,
+        total_tvl_value: BigDecimal,
     }
 
     #[derive(Getters, new, Debug)]
