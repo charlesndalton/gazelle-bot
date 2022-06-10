@@ -133,22 +133,29 @@ mod report_publisher {
     use bigdecimal::BigDecimal;
 
     pub async fn publish_report(report: AngleStablecoinReport, telegram_token: &str) -> Result<()> {
-        println!("RPORT : {:?}", report);
-        println!("Daily Angle");
-        println!("-----------");
-        println!("Total agEUR minted: {} (${})", report.total_minted(), report.total_minted_value());
-        println!("Total collateralization ratio: {}", report.total_collateralization_ratio());
-        println!("Organic collateralization ratio: {}", report.organic_collateralization_ratio());
+        println!("REPORT : {:?}", report);
+        let mut report_formatted = vec!(
+            format!("Daily Angle Report"),
+            format!("-----------"),
+            format!("Total agEUR minted: {} (${})", report.total_minted(), report.total_minted_value()),
+            format!("Total collateralization ratio: {}", report.total_collateralization_ratio()),
+            format!("Organic collateralization ratio: {}", report.organic_collateralization_ratio())
+        );
         for collateral_report in report.collateral_reports() {
-            println!("-----------");
-            println!("Asset – {}", collateral_report.asset_name());
-            println!("Percentage of volatility hedged: {}%", collateral_report.hedge_ratio());
-            println!("Percentage of organic TVL: {}%", ((collateral_report.organic_tvl_value() / report.organic_tvl()) * BigDecimal::from(100)).with_scale(0));
+            report_formatted.push("-----------".to_string());
+            report_formatted.push(format!("Asset – {}", collateral_report.asset_name()));
+            report_formatted.push(format!("Percentage of volatility hedged: {}%", collateral_report.hedge_ratio()));
+            report_formatted.push(format!("Percentage of organic TVL: {}%", ((collateral_report.organic_tvl_value() / report.organic_tvl()) * BigDecimal::from(100)).with_scale(0)));
             //println!("User TVL: {}, (${})", collateral_report.organic_tvl_value(), collateral_report.user_tvl_value());
             //println!("SLP TVL: {}, (${})", collateral_report.slp_tvl(), collateral_report.slp_tvl_value());
             //telegram_client::send_message_to_committee(format!("{}'s price risk relative to the euro is hedged away {}%", individual_report.collateral_asset(), individual_report.collateralization_ratio()).as_str(), telegram_token).await?;
             //
         }
+
+        println!("{:?}", report_formatted);
+
+        let report_for_telegram = report_formatted.join("\n");
+        telegram_client::send_message_to_committee(&report_for_telegram, telegram_token).await?;
 
         Ok(())
     }
