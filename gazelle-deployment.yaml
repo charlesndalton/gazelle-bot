@@ -1,24 +1,19 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: batch/v1
+kind: CronJob 
 metadata:
-  name: gazelle-deployment
-  labels:
-    app: gazelle
+  name: gazelle-job
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: gazelle
-  template:
-    metadata:
-      labels:
-        app: gazelle 
+  schedule: "@daily"
+  jobTemplate:
     spec:
-      containers:
-      - name: gazelle 
-        image: charlesdalton/gazelle-bot:latest
-        env:
-        - name: GAZELLE_TELEGRAM_TOKEN
-          value: ${GAZELLE_TELEGRAM_TOKEN}
-        - name: INFURA_API_KEY
-          value: ${INFURA_API_KEY}
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: gazelle 
+            image: charlesdalton/gazelle:latest
+            env:
+            - name: GAZELLE_TELEGRAM_TOKEN
+              value: ${GAZELLE_TELEGRAM_TOKEN}
+            - name: INFURA_API_KEY
+              value: ${INFURA_API_KEY}
