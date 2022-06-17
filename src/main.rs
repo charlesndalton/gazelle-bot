@@ -1,16 +1,30 @@
 use types::Result;
 use std::env;
+use log::{info, error};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let telegram_token = env::var("GAZELLE_TELEGRAM_TOKEN").expect("GAZELLE_TELEGRAM_TOKEN not set");
     let infura_api_key = env::var("INFURA_API_KEY").expect("INFURA_API_KEY not set");
 
+    env_logger::init();
 
-    println!("Starting!");
+    info!("=============== GAZELLE STARTING ===============");
 
-    let report = report_creator::create_report(&infura_api_key).await?;
-    report_publisher::publish_report(report, &telegram_token).await?;
+    let report = match report_creator::create_report(&infura_api_key).await {
+        Ok(report) => report,
+        Err(e) => { 
+            error!("Report could not be created, with the following error: {}", e);
+            panic!();
+        },
+    };
+
+    info!("Report: {:?}", report);
+
+    match report_publisher::publish_report(report, &telegram_token).await {
+        Err(e) => error!("Report could not be published, with the following error: {}", e),
+        Ok(_) => (),
+    };
 
     Ok(())
 }
@@ -21,7 +35,9 @@ mod report_creator {
         exchange_rate_api_client,
         cryptocurrency_prices_api_client,
         graph_client,
-        types::{Result, Error, AngleStablecoinReport, CollateralReport}
+        types::{Result, AngleStablecoinReport, CollateralReport, 
+            Error::{self, MissingField}
+        }
     };
     use serde_json::{Value};
     use num_bigint::BigInt;
@@ -34,31 +50,29 @@ mod report_creator {
         let stablecoin_data = graph_client::get_stablecoin_data().await?;
         // hack: unwraps galore
         println!("{:?}", stablecoin_data);
-        let ag_eur_data = &stablecoin_data["data"]["stableDatas"].as_array().unwrap()[0];
-        let total_minted = (BigDecimal::from_str(ag_eur_data["totalMinted"].as_str().unwrap())? / 10_i64.pow(18)).with_scale(0);
-        //let total_minted_value = BigDecimal::from(1);
-        //let total_minted = BigDecimal::from(1);
+        let ag_eur_data = &stablecoin_data["data"]["stableDatas"].as_array().ok_or(MissingField { expected_field: "stableDatas".to_string() })?[0];
+        let total_minted = (BigDecimal::from_str(ag_eur_data["totalMinted"].as_str().ok_or(MissingField { expected_field: "totalMinted".to_string() })?)? / 10_i64.pow(18)).with_scale(0);
         let exchange_rate = exchange_rate_api_client::get_eur_usd_exchange_rate().await?;
         let total_minted_value = &total_minted * exchange_rate; 
         let mut total_collateral_value = BigDecimal::from(0);
         let mut organic_collateral_value = BigDecimal::from(0); // not incl. SLP deposits
 
-        let collateral_datas = ag_eur_data["collaterals"].as_array().unwrap();
+        let collateral_datas = ag_eur_data["collaterals"].as_array().ok_or(MissingField { expected_field: "collaterals".to_string() })?;
 
         for collateral_data in collateral_datas {
-            let collateral_data = collateral_data.as_object().unwrap();
+            let collateral_data = collateral_data.as_object().ok_or(MissingField { expected_field: "collaterals[x]".to_string() })?;
 
-            let decimals: u32 = collateral_data["decimals"].as_str().unwrap().parse().unwrap();
+            let decimals: u32 = collateral_data["decimals"].as_str().ok_or(MissingField { expected_field: "decimals".to_string() })?.parse()?;
             let slp_divide_by: BigDecimal = (BigInt::one() * 10_u32).pow(18 + decimals).into(); // they format the stockSLP in 18 + decimals
             let stock_slp = (BigDecimal::from_str(collateral_data["stockSLP"].as_str().unwrap())? / slp_divide_by).with_scale(0);
 
             let stock_user = (BigDecimal::from_str(collateral_data["stockUser"].as_str().unwrap())? / 10_i64.pow(18)).with_scale(0); 
-            let total_hedge_amount = (BigDecimal::from_str(collateral_data["totalHedgeAmount"].as_str().unwrap())? / 10_i64.pow(18)).with_scale(0);
+            let total_hedge_amount = (BigDecimal::from_str(collateral_data["totalHedgeAmount"].as_str().ok_or(MissingField { expected_field: "totalHedgeAmount".to_string() })?)? / 10_i64.pow(18)).with_scale(0);
             let hedge_ratio = ((total_hedge_amount / &stock_user) * BigDecimal::from(100));
 
-            let collateral_symbol = collateral_data["collatName"].as_str().unwrap();
+            let collateral_symbol = collateral_data["collatName"].as_str().ok_or(MissingField { expected_field: "collatName".to_string() })?;
             let price = cryptocurrency_prices_api_client::get_usd_price(collateral_symbol).await?;
-            let total_assets = BigDecimal::from_str(collateral_data["totalAsset"].as_str().unwrap())? / 10_i64.pow(decimals);
+            let total_assets = BigDecimal::from_str(collateral_data["totalAsset"].as_str().ok_or(MissingField { expected_field: "totalAsset".to_string() })?)? / 10_i64.pow(decimals);
             let total_assets_value = &total_assets * &price;
             let stock_slp_value = &stock_slp * &price;
 
@@ -90,25 +104,11 @@ mod report_creator {
 mod graph_client {
     use crate::types::Result;
     use serde_json::Value;
-    // this is very hacky (using string post body and `Value` response instead of using structs &
-    // deserializing) but I will hopefully be the only one to ever interact with this bot
 
     const URL: &str = "https://api.thegraph.com/subgraphs/name/picodes/transaction";
-    const COLLATERAL_DATA_POST_BODY: &str = "{ \"query\": \"{ poolDatas { stableName, collatName, decimals, stockUser, totalHedgeAmount, stockSLP } }\" }";
+    // this is very hacky (using string post body and `Value` response instead of using structs &
+    // deserializing) but I will hopefully be the only one to ever interact with this bot
     const STABLECOIN_DATA_POST_BODY: &str = "{ \"query\": \"{ stableDatas { name, totalMinted, collatRatio, collaterals { collatName, decimals, stockSLP, stockUser, totalAsset, totalHedgeAmount } } }\" }";
-
-    //pub async fn get_collateral_data() -> Result<Value> {
-    //    let client = reqwest::Client::new();
-
-    //    let res = client.post(COLLATERAL_DATA_URL)
-    //        .body(COLLATERAL_DATA_POST_BODY)
-    //        .send()
-    //        .await?;
-
-    //    let res_json: Value = res.json().await?;
-
-    //    Ok(res_json)
-    //}
 
     pub async fn get_stablecoin_data() -> Result<Value> {
         let client = reqwest::Client::new();
@@ -146,15 +146,12 @@ mod report_publisher {
             report_formatted.push(format!("Asset – {}", collateral_report.asset_name()));
             report_formatted.push(format!("Percentage of volatility hedged: {}%", collateral_report.hedge_ratio()));
             report_formatted.push(format!("Percentage of organic TVL: {}%", ((collateral_report.organic_tvl_value() / report.organic_tvl()) * BigDecimal::from(100)).with_scale(0)));
-            //println!("User TVL: {}, (${})", collateral_report.organic_tvl_value(), collateral_report.user_tvl_value());
-            //println!("SLP TVL: {}, (${})", collateral_report.slp_tvl(), collateral_report.slp_tvl_value());
-            //telegram_client::send_message_to_committee(format!("{}'s price risk relative to the euro is hedged away {}%", individual_report.collateral_asset(), individual_report.collateralization_ratio()).as_str(), telegram_token).await?;
-            //
         }
 
-        println!("{:?}", report_formatted);
-
         let report_for_telegram = report_formatted.join("\n");
+        
+        println!("{:?}", report_for_telegram);
+        println!("{:?}", telegram_token);
         telegram_client::send_message_to_committee(&report_for_telegram, telegram_token).await?;
 
         Ok(())
@@ -233,22 +230,6 @@ mod exchange_rate_api_client {
 
         Ok(exchange_rate)
     }
-
-    //pub async fn convert_eur_to_usd(amount: &BigDecimal) -> Result<BigDecimal> {
-    //    let url = format!("https://api.apilayer.com/exchangerates_data/convert?to=USD&from=EUR&amount={}", amount);
-
-    //    let client = reqwest::Client::new();
-    //    let response = client
-    //        .get(url)
-    //        .header("apikey", "3ZjsVwEmO2v4cOOLl87N8VVev5yeD5GK")
-    //        .send()
-    //        .await?;
-
-    //    let response_json: Value = response.json().await?;
-    //    println!("{:?}", response_json);
-
-    //    Ok(BigDecimal::from(response_json["result"].as_f64().unwrap().round() as i64))
-    //}
 }
 
 mod types {
@@ -271,7 +252,15 @@ mod types {
         ParseBigInt(#[from] num_bigint::ParseBigIntError),
 
         #[error(transparent)]
+        ParseInt(#[from] std::num::ParseIntError),
+
+        #[error(transparent)]
         ParseBigDecimal(#[from] bigdecimal::ParseBigDecimalError),
+
+        #[error("Can't deserialize the following field {expected_field:?}")]
+        MissingField {
+            expected_field: String
+        }
     }
 
     pub type Result<T> = std::result::Result<T, Error>;

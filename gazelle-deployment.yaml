@@ -3,7 +3,7 @@ kind: CronJob
 metadata:
   name: gazelle-job
 spec:
-  schedule: "@daily"
+  schedule: "* * * * *"
   jobTemplate:
     spec:
       template:
