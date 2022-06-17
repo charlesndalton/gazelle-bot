@@ -5,10 +5,10 @@ COPY Cargo.toml /tmp/gazelle
 COPY Cargo.lock /tmp/gazelle
 COPY dummy.rs /tmp/gazelle
 
-RUN sed i 's/src/main.rs/dummy.rs/' Cargo.toml
+RUN sed -i 's|src/main.rs|dummy.rs|g' Cargo.toml
 RUN env CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --target x86_64-unknown-linux-musl --release
 
-RUN sed -i 's/dummy.rs/src/main.rs/' Cargo.toml
+RUN sed -i 's|dummy.rs|src/main.rs|g' Cargo.toml
 COPY . /tmp/gazelle
 RUN env CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --target x86_64-unknown-linux-musl --release
 
