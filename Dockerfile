@@ -1,12 +1,15 @@
 FROM docker.io/clux/muslrust:1.59.0 as cargo-build
-WORKDIR /tmp
-RUN cargo install cargo-build-deps
-RUN USER=root cargo new --bin gazelle
+
 WORKDIR /tmp/gazelle
-COPY Cargo.toml Cargo.lock ./
-RUN cargo build-deps --release
-RUN rm -rf tmp/gazelle/src
-COPY src tmp/gazelle/src 
+COPY Cargo.toml /tmp/gazelle
+COPY Cargo.lock /tmp/gazelle
+COPY dummy.rs /tmp/gazelle
+
+RUN sed i 's/src/main.rs/dummy.rs/' Cargo.toml
+RUN env CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --target x86_64-unknown-linux-musl --release
+
+RUN sed -i 's/dummy.rs/src/main.rs/' Cargo.toml
+COPY . /tmp/gazelle
 RUN env CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --target x86_64-unknown-linux-musl --release
 
 
