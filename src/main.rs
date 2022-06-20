@@ -44,7 +44,7 @@ mod report_creator {
     use bigdecimal::{BigDecimal, One};
     use std::str::FromStr;
 
-    pub async fn create_report(infura_api_key: &str) -> Result<AngleStablecoinReport> {
+    pub async fn create_report(_infura_api_key: &str) -> Result<AngleStablecoinReport> {
         let mut collateral_reports = Vec::new();
 
         let stablecoin_data = graph_client::get_stablecoin_data().await?;
@@ -64,11 +64,12 @@ mod report_creator {
 
             let decimals: u32 = collateral_data["decimals"].as_str().ok_or(MissingField { expected_field: "decimals".to_string() })?.parse()?;
             let slp_divide_by: BigDecimal = (BigInt::one() * 10_u32).pow(18 + decimals).into(); // they format the stockSLP in 18 + decimals
-            let stock_slp = (BigDecimal::from_str(collateral_data["stockSLP"].as_str().unwrap())? / slp_divide_by).with_scale(0);
+            let stock_slp = (BigDecimal::from_str(collateral_data["stockSLP"].as_str().ok_or(MissingField { expected_field: "stockSLP".to_string() })?)? / slp_divide_by).with_scale(0);
 
-            let stock_user = (BigDecimal::from_str(collateral_data["stockUser"].as_str().unwrap())? / 10_i64.pow(18)).with_scale(0); 
-            let total_hedge_amount = (BigDecimal::from_str(collateral_data["totalHedgeAmount"].as_str().ok_or(MissingField { expected_field: "totalHedgeAmount".to_string() })?)? / 10_i64.pow(18)).with_scale(0);
+            let stock_user = (BigDecimal::from_str(collateral_data["stockUser"].as_str().ok_or(MissingField { expected_field: "stockUser".to_string() })?)? / 10_i64.pow(18)).with_scale(0); 
+            let total_hedge_amount = extract_field_as_decimal(&collateral_data, "totalHedgeAmount")? / 10_i64.pow(18);
             let hedge_ratio = ((total_hedge_amount / &stock_user) * BigDecimal::from(100));
+            let total_margin = extract_field_as_decimal(collateral_data, "totalMargin")? / 10_i64.pow(decimals);
 
             let collateral_symbol = collateral_data["collatName"].as_str().ok_or(MissingField { expected_field: "collatName".to_string() })?;
             let price = cryptocurrency_prices_api_client::get_usd_price(collateral_symbol).await?;
@@ -76,7 +77,7 @@ mod report_creator {
             let total_assets_value = &total_assets * &price;
             let stock_slp_value = &stock_slp * &price;
 
-            let organic_assets = if &total_assets > &stock_slp { &total_assets - &stock_slp } else { BigDecimal::from(0) };
+            let organic_assets = if &total_assets > &(&stock_slp + &total_margin) { &total_assets - (&stock_slp + &total_margin) } else { BigDecimal::from(0) };
             let organic_assets_value = &organic_assets * &price;
 
             organic_collateral_value += &organic_assets_value;
@@ -99,6 +100,11 @@ mod report_creator {
 
         Ok(AngleStablecoinReport::new(total_minted.with_scale(0), total_minted_value.with_scale(0), organic_collateral_value.with_scale(0), total_collateral_value.with_scale(0), organic_collateralization_ratio.with_scale(2), total_collateralization_ratio.with_scale(2), collateral_reports)) 
     }
+
+    fn extract_field_as_decimal(object: &serde_json::Map<String, Value>, field_name: &str) -> Result<BigDecimal> {
+        Ok(BigDecimal::from_str(object[field_name].as_str().ok_or(MissingField { expected_field: field_name.to_string() })?)?.with_scale(0))
+    }
+
 }
 
 mod graph_client {
@@ -108,7 +114,7 @@ mod graph_client {
     const URL: &str = "https://api.thegraph.com/subgraphs/name/picodes/transaction";
     // this is very hacky (using string post body and `Value` response instead of using structs &
     // deserializing) but I will hopefully be the only one to ever interact with this bot
-    const STABLECOIN_DATA_POST_BODY: &str = "{ \"query\": \"{ stableDatas { name, totalMinted, collatRatio, collaterals { collatName, decimals, stockSLP, stockUser, totalAsset, totalHedgeAmount } } }\" }";
+    const STABLECOIN_DATA_POST_BODY: &str = "{ \"query\": \"{ stableDatas { name, totalMinted, collatRatio, collaterals { collatName, decimals, stockSLP, stockUser, totalAsset, totalHedgeAmount, totalMargin } } }\" }";
 
     pub async fn get_stablecoin_data() -> Result<Value> {
         let client = reqwest::Client::new();
