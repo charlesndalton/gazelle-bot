@@ -24,3 +24,4 @@ derive-getters = "0.2.0"
 bigdecimal = "0.3.0"
 num-bigint = "0.4"
 backoff = { version = "0.4.0", features = ["futures", "tokio"] }
+num-format = "0.4.0"

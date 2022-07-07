@@ -137,13 +137,19 @@ mod report_publisher {
         types::{Result, AngleStablecoinReport}
     };
     use bigdecimal::BigDecimal;
+    use num_format::{Locale, ToFormattedString};
+    use bigdecimal::{ToPrimitive, FromPrimitive};
+
+    fn format(num: &BigDecimal) -> String {
+        num.to_u128().unwrap().to_formatted_string(&Locale::en)
+    }
 
     pub async fn publish_report(report: AngleStablecoinReport, telegram_token: &str) -> Result<()> {
         println!("REPORT : {:?}", report);
         let mut report_formatted = vec!(
             format!("Daily Angle Report"),
             format!("-----------"),
-            format!("Total agEUR minted: {} (${})", report.total_minted(), report.total_minted_value()),
+            format!("Total agEUR minted: {} (${})", format(report.total_minted()), format(report.total_minted_value())),
             format!("Total collateralization ratio: {}", report.total_collateralization_ratio()),
             format!("Organic collateralization ratio: {}", report.organic_collateralization_ratio())
         );
