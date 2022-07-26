@@ -45,7 +45,7 @@ mod report_creator {
             Result,
         },
     };
-    use bigdecimal::{BigDecimal, One};
+    use bigdecimal::{BigDecimal, One, Zero};
     use num_bigint::BigInt;
     use serde_json::Value;
     use std::str::FromStr;
@@ -69,7 +69,9 @@ mod report_creator {
                 / 10_i64.pow(18))
             .with_scale(0);
         let exchange_rate = exchange_rate_api_client::get_eur_usd_exchange_rate().await?;
-        let total_minted_value = &total_minted * exchange_rate;
+        let total_minted_value = &total_minted * &exchange_rate;
+
+        let mut total_minted_through_normal_module = BigDecimal::from(0);
         let mut total_collateral_value = BigDecimal::from(0);
         let mut organic_collateral_value = BigDecimal::from(0); // not incl. SLP deposits
 
@@ -102,6 +104,13 @@ mod report_creator {
                 },
             )?)? / 10_i64.pow(18))
             .with_scale(0);
+
+            if stock_user.is_zero() {
+                continue;
+            }
+
+            total_minted_through_normal_module += &stock_user;
+
             let total_hedge_amount =
                 extract_field_as_decimal(&collateral_data, "totalHedgeAmount")? / 10_i64.pow(18);
             let hedge_ratio = ((total_hedge_amount / &stock_user) * BigDecimal::from(100));
@@ -142,12 +151,16 @@ mod report_creator {
             ));
         }
 
-        let organic_collateralization_ratio = &organic_collateral_value / &total_minted_value;
-        let total_collateralization_ratio = &total_collateral_value / &total_minted_value;
+        let total_minted_through_normal_module_value = &total_minted_through_normal_module * &exchange_rate;
+
+        let organic_collateralization_ratio = &organic_collateral_value / &total_minted_through_normal_module;
+        let total_collateralization_ratio = &total_collateral_value / &total_minted_through_normal_module;
 
         Ok(AngleStablecoinReport::new(
             total_minted.with_scale(0),
             total_minted_value.with_scale(0),
+            total_minted_through_normal_module.with_scale(0),
+            total_minted_through_normal_module_value.with_scale(0),
             organic_collateral_value.with_scale(0),
             total_collateral_value.with_scale(0),
             organic_collateralization_ratio.with_scale(2),
@@ -212,10 +225,15 @@ mod report_publisher {
             format!("Daily Angle Report"),
             format!("-----------"),
             format!(
-                "Total agEUR minted: {} (${})",
-                format(report.total_minted()),
-                format(report.total_minted_value())
+                "Normal agEUR minted: {} (${})",
+                format(report.total_minted_through_normal_module()),
+                format(report.total_minted_through_normal_module_value())
             ),
+            format!(
+                "AMO agEUR minted: {} (${})",
+                format(&(report.total_minted() - report.total_minted_through_normal_module())),
+                format(&(report.total_minted_value() - report.total_minted_through_normal_module_value()))
+                ),
             format!(
                 "Total collateralization ratio: {}",
                 report.total_collateralization_ratio()
@@ -382,6 +400,8 @@ mod types {
     pub struct AngleStablecoinReport {
         total_minted: BigDecimal,
         total_minted_value: BigDecimal,
+        total_minted_through_normal_module: BigDecimal,
+        total_minted_through_normal_module_value: BigDecimal,
         organic_tvl: BigDecimal,
         total_tvl: BigDecimal,
         organic_collateralization_ratio: BigDecimal,
